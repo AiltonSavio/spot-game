@@ -101,6 +101,9 @@ async function triggerNewRound(
   const proofHex = proofLine.split(":")[1].trim();
   const outputHex = outputLine.split(":")[1].trim();
 
+  console.log("🖊️ Proof: ", proofHex)
+  console.log("📜 Output:", outputHex);
+
   const proofBytes = Array.from(Buffer.from(proofHex, "hex"));
   const outputBytes = Array.from(Buffer.from(outputHex, "hex"));
   const alphaBytes = Array.from(Buffer.from(alpha, "utf8"));

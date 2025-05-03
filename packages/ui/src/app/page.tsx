@@ -11,6 +11,7 @@ import {
   ConnectButton,
   useSuiClientQuery,
   useSignAndExecuteTransaction,
+  useSuiClient,
 } from "@mysten/dapp-kit";
 import { Transaction } from "@mysten/sui/transactions";
 import { toast } from "@/components/ui/sonner";
@@ -25,6 +26,7 @@ const ROUND_DURATION = 30 * 60; // seconds
 const POOL_DISTRIBUTION = [50, 20, 12, 8.5, 5.2, 2.5, 1, 0.5, 0.2, 0.1];
 
 export default function HomePage() {
+  const client = useSuiClient();
   const account = useCurrentAccount();
   const gameId = process.env.NEXT_PUBLIC_SPOT_GAME_ID!;
   const pkgId = process.env.NEXT_PUBLIC_SPOT_PKG_ID!;
@@ -102,6 +104,15 @@ export default function HomePage() {
     // Clean up on unmount or when timeLeft changes
     return () => clearInterval(timer);
   }, [roundInfo.timeLeft]);
+
+  // when the timer hit zero, wait 2 s then refetch
+  useEffect(() => {
+    if (roundInfo.timeLeft !== 0) return;
+    const timeout = setTimeout(() => {
+      refetch();
+    }, 2000);
+    return () => clearTimeout(timeout);
+  }, [roundInfo.timeLeft, refetch]);
 
   const toggleNumber = (n: number) => {
     setSelected((prev) => {
@@ -209,8 +220,16 @@ export default function HomePage() {
       return;
     }
 
-    const noCurrentRound = roundInfo.timeLeft === 0;
+    const coinBalance = await client.getBalance({ owner: account.address });
+    if (Number(coinBalance.totalBalance) < ENTRY_FEE) {
+      toast.error("Not Enough SUI", {
+        description: "You need more SUI to join",
+        icon: <XCircle className="h-5 w-5" />,
+      });
+      return;
+    }
 
+    const noCurrentRound = roundInfo.timeLeft === 0;
     if (noCurrentRound) {
       toast.error("No Current Round", {
         description: "There's no round currently to join",
@@ -223,7 +242,6 @@ export default function HomePage() {
     const userAlreadyInRound = roundInfo.bets.some(
       (bet: any) => bet.fields?.player === account.address
     );
-
     if (userAlreadyInRound) {
       toast.error("Already Participating", {
         description: "You are already participating in this round.",
@@ -362,7 +380,7 @@ export default function HomePage() {
               className="w-full mt-4 bg-green-400 hover:bg-green-500 text-lg h-12 hover:cursor-pointer"
               onClick={joinRound}
             >
-              {isLoadingJoin ? <Spinner size={"sm"} /> : 'Play/Stake'}
+              {isLoadingJoin ? <Spinner size={"sm"} /> : "Play/Stake"}
             </Button>
           </Card>
         </div>
