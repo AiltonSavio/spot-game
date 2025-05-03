@@ -27,7 +27,7 @@ export function ClientSideProviders({
         <Toaster />
         <Sonner />
         <SuiClientProvider networks={networks} defaultNetwork="devnet">
-          <WalletProvider>{children}</WalletProvider>
+          <WalletProvider autoConnect>{children}</WalletProvider>
         </SuiClientProvider>
       </TooltipProvider>
     </QueryClientProvider>

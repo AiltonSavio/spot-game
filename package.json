@@ -15,6 +15,7 @@
     "ui:start": "pnpm --filter @spotgame/ui run start",
     "ui:lint": "pnpm --filter @spotgame/ui run lint",
     "ui:format": "pnpm --filter @spotgame/ui run format",
+    "backend:start": "pnpm --filter @spotgame/backend run start",
     "build": "pnpm run contracts:build && pnpm run ui:build",
     "test": "pnpm run contracts:test && pnpm run ui:lint",
     "dev": "concurrently \"pnpm run contracts:publish\" \"pnpm run ui:dev\""
