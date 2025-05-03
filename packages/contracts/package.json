@@ -1,0 +1,9 @@
+{
+  "name": "@spotgame/contracts",
+  "version": "0.0.1",
+  "scripts": {
+    "build": "sui move build",
+    "publish": "sui client publish",
+    "test": "sui move test"
+  }
+}

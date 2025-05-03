@@ -1,0 +1,32 @@
+{
+  "name": "spot-game",
+  "version": "1.0.0",
+  "description": "",
+  "workspaces": [
+    "packages/*"
+  ],
+  "main": "index.js",
+  "scripts": {
+    "contracts:build": "pnpm --filter @spotgame/contracts run build",
+    "contracts:publish": "pnpm --filter @spotgame/contracts run publish",
+    "contracts:test": "pnpm --filter @spotgame/contracts run test",
+    "ui:dev": "pnpm --filter @spotgame/ui run dev",
+    "ui:build": "pnpm --filter @spotgame/ui run build",
+    "ui:start": "pnpm --filter @spotgame/ui run start",
+    "ui:lint": "pnpm --filter @spotgame/ui run lint",
+    "ui:format": "pnpm --filter @spotgame/ui run format",
+    "build": "pnpm run contracts:build && pnpm run ui:build",
+    "test": "pnpm run contracts:test && pnpm run ui:lint",
+    "dev": "concurrently \"pnpm run contracts:publish\" \"pnpm run ui:dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^7.6.0",
+    "husky": "~8.0.3",
+    "lint-staged": "~13.2.2",
+    "prettier": "^3.0.0"
+  },
+  "packageManager": "pnpm@10.8.0",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
