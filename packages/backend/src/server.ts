@@ -6,21 +6,7 @@ import { getFullnodeUrl, SuiClient } from "@mysten/sui/client";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Transaction } from "@mysten/sui/transactions";
 import path from "path";
-
-// // your hex-encoded VRF public key
-// const hexKey =
-//   "cef8641d2309ff408c554c4463d26da3413446bdc186847fb66f173f67e51135";
-
-// // convert it
-// const keyBytes = hexToBytes(hexKey);
-
-// // now build your Move call
-// tx.moveCall({
-//   package: pkgId,
-//   module: "spot_game",
-//   function: "set_vrf_key",
-//   arguments: [tx.object(gameId), tx.pure.vector("u8", keyBytes)],
-// });
+import { hexToBytes } from "./utils";
 
 const {
   SUI_RPC = getFullnodeUrl("devnet"),
@@ -50,6 +36,33 @@ const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 async function makeSigner() {
   const keypair = Ed25519Keypair.fromSecretKey(ADMIN_SECRET_KEY || "");
   return keypair;
+}
+
+async function setVrfKey(
+  client: SuiClient,
+  signer: Ed25519Keypair,
+  hexKey: string
+): Promise<string> {
+  const tx = new Transaction();
+
+  // convert it
+  const keyBytes = hexToBytes(hexKey);
+
+  // now build your Move call
+  tx.moveCall({
+    package: SPOT_PKG_ID || "",
+    module: "spot_game",
+    function: "set_vrf_key",
+    arguments: [tx.object(SPOT_GAME_ID || ""), tx.pure.vector("u8", keyBytes)],
+  });
+
+  const result = await client.signAndExecuteTransaction({
+    signer,
+    transaction: tx,
+  });
+
+  console.log("✅ tx sent:", result.digest);
+  return result.digest;
 }
 
 async function triggerNewRound(
@@ -101,7 +114,7 @@ async function triggerNewRound(
   const proofHex = proofLine.split(":")[1].trim();
   const outputHex = outputLine.split(":")[1].trim();
 
-  console.log("🖊️ Proof: ", proofHex)
+  console.log("🖊️ Proof: ", proofHex);
   console.log("📜 Output:", outputHex);
 
   const proofBytes = Array.from(Buffer.from(proofHex, "hex"));
@@ -140,14 +153,17 @@ async function keeperLoop(client: SuiClient, signer: Ed25519Keypair) {
         id: SPOT_GAME_ID!,
         options: { showContent: true },
       });
-      const round = (obj.data?.content as any)?.fields?.current_round;
-      if (!round) {
-        console.log("🔍 no active round yet, retrying in 1 s");
-        await sleep(1000);
+      const content = (obj.data?.content as any)?.fields;
+      
+      const vrfPubkey = content?.vrf_pubkey;
+      if (!vrfPubkey || vrfPubkey.length === 0) {
+        console.warn("⚠️ vrf_pubkey not set: please POST /set-vrf-key");
+        await sleep(5000);
         continue;
       }
-
-      const endMs = Number(round.fields.end_time_ms);
+      
+      const round = content.current_round;
+      const endMs = round ? Number(round.fields.end_time_ms) : Date.now();
       const now = Date.now();
       const wait = Math.max(endMs - now, 0);
 
@@ -194,6 +210,15 @@ async function main() {
   app.post("/trigger", async (_req, res) => {
     try {
       const digest = await triggerNewRound(client, signer);
+      res.json({ ok: true, digest });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  app.post("/set-vrf-key", async (req, res) => {
+    try {
+      const { hexKey } = req.body;
+      const digest = await setVrfKey(client, signer, hexKey as string);
       res.json({ ok: true, digest });
     } catch (e: any) {
       res.status(500).json({ error: e.message });

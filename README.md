@@ -87,9 +87,8 @@ After publishing you’ll see two new on-chain IDs:
 2. From the repo root:
 
    ```bash
-   cd packages/ui
    pnpm install
-   pnpm run dev
+   pnpm run ui:dev
    ```
 
 3. Open [http://localhost:3000](http://localhost:3000), connect your wallet, pick numbers, and play.
@@ -128,9 +127,8 @@ cargo run --bin ecvrf-cli keygen
 2. From the repo root:
 
    ```bash
-   cd packages/backend
    pnpm install
-   pnpm run start
+   pnpm run backend:start
    ```
 
 The keeper will:
@@ -139,6 +137,39 @@ The keeper will:
 2. When a round ends, call your Move `trigger_new_round` entry
 3. Invoke `ecvrf-cli` (via the submodule) to generate randomness & proof
 4. Retry up to 3× on failure
+
+---
+
+Thought for a couple of seconds
+
+### 6️⃣ Set your VRF public key via HTTP
+
+Before your keeper can actually start new rounds on‐chain, you must initialize the on‐chain `vrf_pubkey` by calling the Move entry `set_vrf_key`. We’ve exposed a simple HTTP endpoint in your Express server to do it.
+
+**Endpoint**
+
+```
+POST /set-vrf-key
+Content-Type: application/json
+```
+
+**Request Body**
+
+```json
+{
+  "hexKey": "<your 32-byte VRF public key, hex string>"
+}
+```
+
+**Example (using `curl`):**
+
+```bash
+curl -X POST http://localhost:8000/set-vrf-key \
+  -H "Content-Type: application/json" \
+  -d '{"hexKey":"<YOUR_VRF_PUBLIC_KEY_HEX>"}'
+```
+
+Once that returns successfully, your keeper is fully authorized to drive rounds using your VRF keypair.
 
 ---
 
