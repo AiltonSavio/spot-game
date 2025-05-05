@@ -40,22 +40,23 @@ public struct RoundEnded has copy, drop {
 // === Constants ===
 const MAX_NUM: u8 = 80;
 const NUMBERS_TO_CHOOSE: u64 = 10;
+const NUMBERS_TO_DRAW: u64 = 12;
 const ENTRY_FEE: u64 = 1_000_000_000; // 1 SUI
 const DEV_FEE: u64 = 300; // 3%
 const ROUND_DURATION_MS: u64 = 30 * 60 * 1000; // 30 minutes
 
 // Prize distribution (bps out of 10000)
 const POOL_DISTRIBUTION: vector<u64> = vector[
-    5000, // Pool 1 (1 match) - 50.0%
-    2000, // Pool 2 (2 matches) - 20.0%
-    1200, // Pool 3 (3 matches) - 12.0%
-    850, // Pool 4 (4 matches) - 8.5%
-    520, // Pool 5 (5 matches) - 5.2%
-    250, // Pool 6 (6 matches) - 2.5%
-    100, // Pool 7 (7 matches) - 1.0%
-    50, // Pool 8 (8 matches) - 0.5%
-    20, // Pool 9 (9 matches) - 0.2%
-    10, // Pool 10 (10 matches) - 0.1%
+    3500, // Pool 1 (1 match) - 35.0%
+    2700, // Pool 2 (2 matches) - 27.0%
+    1400, // Pool 3 (3 matches) - 14.0%
+    1000, // Pool 4 (4 matches) - 10.0%
+    600, // Pool 5 (5 matches) - 6.0%
+    400, // Pool 6 (6 matches) - 4.0%
+    200, // Pool 7 (7 matches) - 2.0%
+    90, // Pool 8 (8 matches) - 0.9%
+    60, // Pool 9 (9 matches) - 0.6%
+    50, // Pool 10 (10 matches) - 0.5%
 ];
 
 public struct Bet has copy, drop, store {
@@ -105,7 +106,7 @@ fun init(ctx: &mut TxContext) {
         admin: admin,
     });
 
-    transfer::transfer(game, ctx.sender());
+    transfer::share_object(game);
 }
 
 // Sets or rotates the VRF public key; only admin
@@ -288,7 +289,7 @@ fun generate_random_numbers(output: vector<u8>): vector<u8> {
     let mut count = 0;
     let mut idx = 0;
     // Iterate over VRF output until we have enough unique numbers
-    while (count < NUMBERS_TO_CHOOSE && idx < out_len) {
+    while (count < NUMBERS_TO_DRAW && idx < out_len) {
         let raw = *vector::borrow(&output, idx);
         let pick = raw % MAX_NUM + 1; // maps 0..(MAX_NUM-1) to 1..MAX_NUM
         if (!vector::contains(&winning_numbers, &pick)) {
@@ -308,7 +309,8 @@ use sui::coin::{mint_for_testing};
 use std::unit_test::{assert_eq};
 #[test_only]
 use sui::test_scenario;
-
+#[test_only]
+use sui::test_utils::destroy;
 // === Test Helpers ===
 #[test_only]
 fun create_game(
@@ -351,9 +353,8 @@ fun get_test_ecvrf_values(): (vector<u8>, vector<u8>, vector<u8>, vector<u8>) {
 
 #[test_only]
 fun end_tests(game: Game, clock: Clock, fee: Coin<SUI>) {
-    // Create a dummy address and transfer the game
-    let dummy_address = @0xCAFE;
-    transfer::public_transfer(game, dummy_address);
+    // Destroy the game
+    destroy(game);
 
     // Destroy the clock
     clock::destroy_for_testing(clock);
@@ -376,11 +377,10 @@ fun test_module_init() {
     scenario.next_tx(admin);
     {
         // Extract the Game object
-        let game = scenario.take_from_sender<Game>();
+        let game = scenario.take_shared<Game>();
         assert_eq!(game.vrf_pubkey, option::none());
         assert!(option::is_none(&game.current_round));
-        // Return the Game object to the object pool
-        scenario.return_to_sender(game);
+        destroy(game);
     };
 
     scenario.end();
@@ -510,7 +510,7 @@ fun test_join_round_fails_on_insufficient_fee() {
 }
 
 #[test]
-fun test_join_round_success_and_event() {
+fun test_join_round_success() {
     let mut ctx = tx_context::dummy();
     let mut pools = vector::empty<Coin<SUI>>();
     let mut i = 0;
@@ -697,7 +697,7 @@ fun test_trigger_new_round_with_bets() {
     assert_eq!(game.current_round.borrow().bets, vector::empty<Bet>());
     assert_eq!(game.current_round.borrow().value, 0);
 
-    let expected_numbers = vector<u8>[80, 14, 68, 29, 37, 3, 11, 30, 75, 39];
+    let expected_numbers = vector<u8>[80, 14, 68, 29, 37, 3, 11, 30, 75, 39, 74, 38];
     assert_eq!(game.winning_numbers, option::some(expected_numbers));
 
     let prize_pools_ref = &game.prize_pools;

@@ -18,12 +18,13 @@ import { toast } from "@/components/ui/sonner";
 import { XCircle, CheckCircle, AlertTriangle, RefreshCw } from "lucide-react";
 import { hexToBytes, utf8ToBytes } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
+import Image from "next/image";
 
 const MAX_NUM = 80;
 const NUMBERS_TO_CHOOSE = 10;
 const ENTRY_FEE = 1_000_000_000; // 1 SUI
 const ROUND_DURATION = 30 * 60; // seconds
-const POOL_DISTRIBUTION = [50, 20, 12, 8.5, 5.2, 2.5, 1, 0.5, 0.2, 0.1];
+const POOL_DISTRIBUTION = [35, 27, 14, 10, 6, 4, 2, 0.9, 0.6, 0.5];
 
 export default function HomePage() {
   const client = useSuiClient();
@@ -294,11 +295,13 @@ export default function HomePage() {
         <div className="hidden sm:block"></div>
 
         {/* middle cell */}
-        <h1 className="justify-self-center text-2xl tiny:text-3xl sm:text-5xl font-bold text-amber-700 tracking-wider drop-shadow-md text-center">
-          SPOT
-          <br />
-          GAME
-        </h1>
+        <Image
+          src="/logo.png"
+          className="justify-self-center drop-shadow-md w-[100px] sm:w-[140px]"
+          width={140}
+          height={140}
+          alt="SPOT GAME logo"
+        />
 
         {/* right cell */}
         <div className="flex items-center gap-x-2 justify-self-end mr-10 2xl:mr-0">
@@ -396,10 +399,10 @@ export default function HomePage() {
           {/* Game Info Card */}
           <Card className="col-span-1 border-2 border-amber-700 bg-amber-200 p-4 mb-4 lg:mt-[18px] rounded-b-lg ">
             <p className="mb-2 text-center">
-              10 numbers are randomly drawn in each round.
+              12 numbers are randomly drawn in each round.
             </p>
             <p className="mb-2 text-center">
-              Correctly pick one or more of 10 to win.
+              Correctly pick one or more out of 10 to win.
             </p>
             <p className="text-center">Round Time : 30m</p>
           </Card>
