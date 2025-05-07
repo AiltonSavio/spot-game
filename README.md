@@ -140,8 +140,6 @@ The keeper will:
 
 ---
 
-Thought for a couple of seconds
-
 ### 6️⃣ Set your VRF public key via HTTP
 
 Before your keeper can actually start new rounds on‐chain, you must initialize the on‐chain `vrf_pubkey` by calling the Move entry `set_vrf_key`. We’ve exposed a simple HTTP endpoint in your Express server to do it.
