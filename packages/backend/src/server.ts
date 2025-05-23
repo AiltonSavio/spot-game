@@ -1,4 +1,3 @@
-// src/server.ts
 import "dotenv/config";
 import express from "express";
 import { spawnSync } from "child_process";
@@ -9,7 +8,7 @@ import path from "path";
 import { hexToBytes } from "./utils";
 
 const {
-  SUI_RPC = getFullnodeUrl("devnet"),
+  SUI_RPC = getFullnodeUrl("testnet"),
   SPOT_PKG_ID,
   SPOT_GAME_ID,
   ADMIN_SECRET_KEY,

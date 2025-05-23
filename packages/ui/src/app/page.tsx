@@ -164,7 +164,7 @@ export default function HomePage() {
   async function doTrigger() {
     setIsAdminOpen(false);
     signAndExecuteTransaction(
-      { transaction: buildTriggerTx(), chain: "sui:devnet" },
+      { transaction: buildTriggerTx(), chain: "sui:testnet" },
       {
         onSuccess: async () => {
           toast.success("Round started!", {
@@ -257,7 +257,7 @@ export default function HomePage() {
     signAndExecuteTransaction(
       {
         transaction: buildJoinRoundTx(),
-        chain: "sui:devnet",
+        chain: "sui:testnet",
       },
       {
         onSuccess: async (result) => {

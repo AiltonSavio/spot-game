@@ -11,6 +11,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 const networks = {
   localnet: { url: getFullnodeUrl("devnet") },
   devnet: { url: getFullnodeUrl("devnet") },
+  testnet: { url: getFullnodeUrl("testnet") },
   mainnet: { url: getFullnodeUrl("mainnet") },
 };
 
@@ -26,7 +27,7 @@ export function ClientSideProviders({
       <TooltipProvider>
         <Toaster />
         <Sonner />
-        <SuiClientProvider networks={networks} defaultNetwork="devnet">
+        <SuiClientProvider networks={networks} defaultNetwork="testnet">
           <WalletProvider autoConnect>{children}</WalletProvider>
         </SuiClientProvider>
       </TooltipProvider>
