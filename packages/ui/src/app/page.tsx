@@ -314,6 +314,15 @@ export default function HomePage() {
               <RefreshCw className="h-5 w-5" />
             </Button>
           )}
+          <a
+            href="https://faucet.sui.io/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex justify-center gap-x-1 mr-2 sm:mr-4"
+          >
+            <span className="relative top-0.5 hidden lg:block">Get Faucet</span>{" "}
+            <Image src={"/faucet.png"} width={24} height={12} alt="faucet" />
+          </a>
           <ConnectButton className="hover:cursor-pointer" />
         </div>
       </div>
