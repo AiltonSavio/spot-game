@@ -27,7 +27,10 @@ export function ClientSideProviders({
       <TooltipProvider>
         <Toaster />
         <Sonner />
-        <SuiClientProvider networks={networks} defaultNetwork="testnet">
+        <SuiClientProvider
+          networks={networks}
+          defaultNetwork={(process.env.NEXT_PUBLIC_SUI_ENV as any) || "devnet"}
+        >
           <WalletProvider autoConnect>{children}</WalletProvider>
         </SuiClientProvider>
       </TooltipProvider>

@@ -8,7 +8,7 @@ import path from "path";
 import { hexToBytes } from "./utils";
 
 const {
-  SUI_RPC = getFullnodeUrl("testnet"),
+  SUI_RPC = getFullnodeUrl((process.env.SUI_ENV as any) || "devnet"),
   SPOT_PKG_ID,
   SPOT_GAME_ID,
   ADMIN_SECRET_KEY,
@@ -186,7 +186,6 @@ async function keeperLoop(client: SuiClient, signer: Ed25519Keypair) {
             );
             break;
           }
-          // await sleep(1000);
           await sleep(1000000000);
         }
       }

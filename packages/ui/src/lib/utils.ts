@@ -10,6 +10,15 @@ export function formatSui(mist: number | string, decimals = 2) {
   return (num / 1e9).toFixed(decimals);
 }
 
+export function formatNumber(num: number, decimals = 2) {
+  if (num === 0) return "0";
+  if (num < 0.0001) return num?.toExponential(2);
+  return num?.toLocaleString(undefined, {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  });
+}
+
 export function hexToBytes(hex: string): number[] {
   // strip any leading 0x
   hex = hex.startsWith("0x") ? hex.slice(2) : hex;

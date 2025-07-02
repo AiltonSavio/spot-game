@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import SpotGameBoard from "@/components/SpotGameBoard";
 import PayoutTable from "@/components/PayoutTable";
-import GameInfo from "@/components/GameInfo";
+import GameInfo, { PaymentOption } from "@/components/GameInfo";
 import {
   useCurrentAccount,
   ConnectButton,
@@ -16,28 +16,27 @@ import {
 import { Transaction } from "@mysten/sui/transactions";
 import { toast } from "@/components/ui/sonner";
 import { XCircle, CheckCircle, AlertTriangle, RefreshCw } from "lucide-react";
-import { hexToBytes, utf8ToBytes } from "@/lib/utils";
+import { formatNumber, formatSui, hexToBytes, utf8ToBytes } from "@/lib/utils";
 import { Spinner } from "@/components/ui/spinner";
 import Image from "next/image";
+import { useUserRuby } from "@/hooks/useUserRuby";
 
 const MAX_NUM = 80;
 const NUMBERS_TO_CHOOSE = 10;
-const ENTRY_FEE = 1_000_000_000; // 1 SUI
-const ROUND_DURATION = 30 * 60; // seconds
-const POOL_DISTRIBUTION = [35, 27, 14, 10, 6, 4, 2, 0.9, 0.6, 0.5];
+const ENTRY_FEE = 100_000_000; // 0.1 SUI
+const ROUND_DURATION = 10 * 60; // seconds
 
 export default function HomePage() {
   const client = useSuiClient();
   const account = useCurrentAccount();
   const gameId = process.env.NEXT_PUBLIC_SPOT_GAME_ID!;
   const pkgId = process.env.NEXT_PUBLIC_SPOT_PKG_ID!;
+  const suiEnv = process.env.NEXT_PUBLIC_SUI_ENV || "devnet";
 
   const [admin, setAdmin] = useState("");
   const [selected, setSelected] = useState<number[]>([]);
   const [roundInfo, setRoundInfo] = useState({
     roundNumber: 0,
-    pools: [],
-    poolSize: 0,
     bets: [],
     players: 0,
     timeLeft: ROUND_DURATION,
@@ -50,8 +49,13 @@ export default function HomePage() {
   const [outputHex, setOutputHex] = useState("");
   const [alphaString, setAlphaString] = useState("");
   const [proofHex, setProofHex] = useState("");
-
   const [isLoadingJoin, setIsLoadingJoin] = useState(false);
+  const [paymentOption, setPaymentOption] = useState<PaymentOption>("sui");
+  const {
+    data: rubyBalance,
+    isLoading: isLoadingRubyBalance,
+    refetch: refetchRubyBalance,
+  } = useUserRuby(gameId, pkgId);
 
   // fetch current game object on load and on account change
   const {
@@ -66,21 +70,26 @@ export default function HomePage() {
     },
   });
 
+  const {
+    data: suiBalance,
+    isLoading: isLoadingBalance,
+    refetch: refetchBalance,
+  } = useSuiClientQuery("getBalance", {
+    owner: account?.address || "",
+  });
+
   useEffect(() => {
     if (gameObj?.data) {
       const content = gameObj?.data?.content;
       const fields = (content as any)?.fields;
       setAdmin(fields?.admin);
       const round_number = fields?.round_number || "0";
-      const pools = (fields?.prize_pools as any[]) || [];
       const round = fields?.current_round || null;
       const endTimeMs = Number(round?.fields?.end_time_ms);
       const winning_numbers = (fields?.winning_numbers as any[]) || [];
       const bets = (round?.fields?.bets as any[]) || [];
       setRoundInfo({
         roundNumber: Number(round_number),
-        pools: pools as never[],
-        poolSize: round?.fields?.value || 0,
         bets: bets as never[],
         players: bets.length,
         timeLeft: endTimeMs
@@ -164,7 +173,7 @@ export default function HomePage() {
   async function doTrigger() {
     setIsAdminOpen(false);
     signAndExecuteTransaction(
-      { transaction: buildTriggerTx(), chain: "sui:testnet" },
+      { transaction: buildTriggerTx(), chain: `sui:${suiEnv}` },
       {
         onSuccess: async () => {
           toast.success("Round started!", {
@@ -184,20 +193,29 @@ export default function HomePage() {
 
   const buildJoinRoundTx = () => {
     const tx = new Transaction();
+    // build common args
+    const picksArg = tx.pure.vector("u8", selected);
+    const gameArg = tx.object(gameId);
+    const clockArg = tx.object.clock();
 
-    const [coin] = tx.splitCoins(tx.gas, [ENTRY_FEE]);
-
-    tx.moveCall({
-      package: pkgId,
-      module: "spot_game",
-      function: "join_round",
-      arguments: [
-        tx.pure.vector("u8", selected),
-        coin,
-        tx.object(gameId),
-        tx.object.clock(),
-      ],
-    });
+    if (paymentOption === "sui") {
+      // pull 0.1 SUI out of gas
+      const [coin] = tx.splitCoins(tx.gas, [ENTRY_FEE]);
+      tx.moveCall({
+        package: pkgId,
+        module: "spot_game",
+        function: "join_round_with_sui",
+        arguments: [picksArg, coin, gameArg, clockArg],
+      });
+    } else {
+      // no coin, just call the ruby entry
+      tx.moveCall({
+        package: pkgId,
+        module: "spot_game",
+        function: "join_round_with_ruby",
+        arguments: [picksArg, gameArg, clockArg],
+      });
+    }
 
     return tx;
   };
@@ -216,15 +234,6 @@ export default function HomePage() {
     if (selected.length < NUMBERS_TO_CHOOSE) {
       toast.error("Invalid Selection", {
         description: `Please select ${NUMBERS_TO_CHOOSE} numbers before playing.`,
-        icon: <XCircle className="h-5 w-5" />,
-      });
-      return;
-    }
-
-    const coinBalance = await client.getBalance({ owner: account.address });
-    if (Number(coinBalance.totalBalance) < ENTRY_FEE) {
-      toast.error("Not Enough SUI", {
-        description: "You need more SUI to join",
         icon: <XCircle className="h-5 w-5" />,
       });
       return;
@@ -251,13 +260,38 @@ export default function HomePage() {
       return;
     }
 
+    console.log("rubyBalance", rubyBalance);
+
+    if (
+      paymentOption === "ruby" &&
+      (rubyBalance || rubyBalance === 0) &&
+      rubyBalance < 50
+    ) {
+      toast.error("Not Enough RUBY", {
+        description: "You need at least 50 RUBY to join.",
+        icon: <XCircle className="h-5 w-5" />,
+      });
+      return;
+    }
+
+    if (paymentOption === "sui") {
+      const coinBalance = await client.getBalance({ owner: account.address });
+      if (Number(coinBalance.totalBalance) < ENTRY_FEE) {
+        toast.error("Not Enough SUI", {
+          description: "You need more SUI to join",
+          icon: <XCircle className="h-5 w-5" />,
+        });
+        return;
+      }
+    }
+
     setIsLoadingJoin(true);
 
     // If all checks pass, proceed with the transaction
     signAndExecuteTransaction(
       {
         transaction: buildJoinRoundTx(),
-        chain: "sui:testnet",
+        chain: `sui:${suiEnv}`,
       },
       {
         onSuccess: async (result) => {
@@ -267,6 +301,10 @@ export default function HomePage() {
           });
           setIsLoadingJoin(false);
           await refetch();
+          await refetchBalance();
+          if (paymentOption === "ruby") {
+            await refetchRubyBalance();
+          }
         },
         onError: (error) => {
           toast.error("Transaction Failed", {
@@ -315,7 +353,7 @@ export default function HomePage() {
             </Button>
           )}
           <a
-            href="https://faucet.sui.io/"
+            href={`https://faucet.sui.io/?address=${account?.address}`}
             target="_blank"
             rel="noopener noreferrer"
             className="flex justify-center gap-x-1 mr-2 sm:mr-4"
@@ -341,10 +379,13 @@ export default function HomePage() {
 
             {/* Game Stats and Controls */}
             <div className="mt-4 grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <GameInfo roundInfo={roundInfo} isLoading={isLoading} />
+              <GameInfo
+                paymentOption={paymentOption}
+                onChangePaymentOption={setPaymentOption}
+              />
 
               {/* Action Buttons */}
-              <div className="flex flex-col gap-4 col-span-1">
+              <div className="flex flex-col col-span-1 mb-3 lg:mb-0">
                 <div className="grid grid-cols-2 gap-4">
                   <Button
                     variant="destructive"
@@ -361,28 +402,52 @@ export default function HomePage() {
                     Autopick
                   </Button>
                 </div>
-                <div className="text-base text-center lg:mt-8">
-                  Round #
-                  {isLoading ? <Spinner size={"xs"} /> : roundInfo.roundNumber}
+                <div className="text-base text-center mt-2 lg:mt-6">
+                  SUI Balance:
+                  {isLoadingBalance ? (
+                    <Spinner className="ml-2" size={"xs"} />
+                  ) : (
+                    <span className="ml-2">
+                      {formatSui(suiBalance?.totalBalance ?? 0)}
+                    </span>
+                  )}
+                </div>
+                <div className="text-base text-center mt-1">
+                  RUBY Balance:
+                  {isLoadingRubyBalance || isLoading || isLoadingBalance ? (
+                    <Spinner className="ml-2" size={"xs"} />
+                  ) : (
+                    <span className="ml-2">
+                      {formatNumber(rubyBalance ?? 0, 0)}
+                    </span>
+                  )}
                 </div>
               </div>
 
               <div className="text-base text-center lg:text-left lg:ml-5 space-y-2">
                 <div>
-                  Number of Players: <br className="hidden lg:block" />{" "}
+                  Number of Players:
                   {isLoading ? (
-                    <Spinner size={"xs"} />
+                    <Spinner className="ml-2" size={"xs"} />
                   ) : (
-                    roundInfo.players.toLocaleString()
+                    <span className="ml-2">
+                      {roundInfo.players.toLocaleString()}
+                    </span>
                   )}
                 </div>
                 <div>
-                  Round time left: <br className="hidden lg:block" />{" "}
+                  Round time left:
                   {isLoading ? (
-                    <Spinner size={"xs"} />
+                    <Spinner className="ml-2" size={"xs"} />
                   ) : (
-                    formatTime(roundInfo.timeLeft)
+                    <span className="ml-2">
+                      {formatTime(roundInfo.timeLeft)}
+                    </span>
                   )}
+                </div>
+                <div className="lg:mt-8 font-bold">
+                  Round #
+                  {isLoading ? <Spinner size={"xs"} /> : roundInfo.roundNumber}
                 </div>
               </div>
             </div>
@@ -399,11 +464,7 @@ export default function HomePage() {
 
         {/* Right Column - Payout Table */}
         <div className="flex flex-col-reverse lg:flex-col lg:w-96">
-          <PayoutTable
-            pools={roundInfo.pools}
-            distribution={POOL_DISTRIBUTION}
-            isLoading={isLoading}
-          />
+          <PayoutTable />
 
           {/* Game Info Card */}
           <Card className="col-span-1 border-2 border-amber-700 bg-amber-200 p-4 mb-4 lg:mt-[18px] rounded-b-lg ">
@@ -413,7 +474,7 @@ export default function HomePage() {
             <p className="mb-2 text-center">
               Correctly pick one or more out of 10 to win.
             </p>
-            <p className="text-center">Round Time : 30m</p>
+            <p className="text-center">Round Time : 10m</p>
           </Card>
         </div>
       </div>

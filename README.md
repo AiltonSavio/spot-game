@@ -29,7 +29,7 @@ a Next.js frontend, and an Express/Keeper service that automatically advances ro
 We vendor the FastCrypto repo as a submodule under `packages/backend/fastcrypto`, so you get the exact CLI we need:
 
 ```bash
-git clone --recurse-submodules https://github.com/you/spot-game.git
+git clone --recurse-submodules https://github.com/AiltonSavio/spot-game
 cd spot-game
 ```
 
@@ -82,6 +82,7 @@ After publishing you’ll see two new on-chain IDs:
    ```
    NEXT_PUBLIC_SPOT_PKG_ID=<your package ID>
    NEXT_PUBLIC_SPOT_GAME_ID=<your game ID>
+   NEXT_PUBLIC_SUI_ENV=devnet          # "devnet" | "testnet" | "localnet"
    ```
 
 2. From the repo root:
@@ -122,6 +123,7 @@ cargo run --bin ecvrf-cli keygen
    SPOT_GAME_ID=<your game ID>
    ADMIN_SECRET_KEY=<admin secret key for signing txs>
    VRF_SECRET_KEY=<hex-encoded VRF secret key from step 4>
+   SUI_ENV=devnet                     # "devnet" | "testnet" | "localnet"
    ```
 
 2. From the repo root:

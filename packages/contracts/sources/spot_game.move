@@ -2,10 +2,11 @@
 module spot_game::spot_game;
 
 use sui::clock::{Clock, timestamp_ms};
-use sui::coin::{Coin, split, join, value, zero, destroy_zero};
+use sui::coin::{Coin, value};
 use sui::ecvrf::ecvrf_verify;
 use sui::event;
 use sui::sui::SUI;
+use sui::table::{Self, Table};
 
 // === Errors ===
 const E_NOT_ADMIN: u64 = 1;
@@ -16,6 +17,7 @@ const E_INVALID_PICKS: u64 = 6;
 const E_INSUFFICIENT_FEE: u64 = 7;
 const E_TIME_NOT_STARTED: u64 = 8;
 const E_TIME_ENDED: u64 = 9;
+const E_INSUFFICIENT_RUBY: u64 = 10;
 
 // === Events ===
 public struct GameCreated has copy, drop {
@@ -41,22 +43,13 @@ public struct RoundEnded has copy, drop {
 const MAX_NUM: u8 = 80;
 const NUMBERS_TO_CHOOSE: u64 = 10;
 const NUMBERS_TO_DRAW: u64 = 12;
-const ENTRY_FEE: u64 = 1_000_000_000; // 1 SUI
-const DEV_FEE: u64 = 300; // 3%
-const ROUND_DURATION_MS: u64 = 30 * 60 * 1000; // 30 minutes
+const SUI_ENTRY_FEE: u64 = 100_000_000; // 0.1 SUI
+const RUBY_ENTRY_FEE: u64 = 50; // 50 ruby
+const ROUND_DURATION_MS: u64 = 10 * 60 * 1000; // 10 minutes
 
-// Prize distribution (bps out of 10000)
-const POOL_DISTRIBUTION: vector<u64> = vector[
-    3500, // Pool 1 (1 match) - 35.0%
-    2700, // Pool 2 (2 matches) - 27.0%
-    1400, // Pool 3 (3 matches) - 14.0%
-    1000, // Pool 4 (4 matches) - 10.0%
-    600, // Pool 5 (5 matches) - 6.0%
-    400, // Pool 6 (6 matches) - 4.0%
-    200, // Pool 7 (7 matches) - 2.0%
-    90, // Pool 8 (8 matches) - 0.9%
-    60, // Pool 9 (9 matches) - 0.6%
-    50, // Pool 10 (10 matches) - 0.5%
+/// how many ruby each 1–10-match bucket contains
+const POOLS: vector<u64> = vector[
+    100, 500, 1_000, 5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 320_000,
 ];
 
 public struct Bet has copy, drop, store {
@@ -67,7 +60,6 @@ public struct Bet has copy, drop, store {
 public struct Round has drop, store {
     start_time_ms: u64,
     end_time_ms: u64,
-    value: u64,
     bets: vector<Bet>,
 }
 
@@ -77,19 +69,12 @@ public struct Game has key, store {
     vrf_pubkey: Option<vector<u8>>,
     round_number: u64,
     current_round: Option<Round>,
-    prize_pools: vector<Coin<SUI>>,
+    ruby: Table<address, u64>,
     winning_numbers: Option<vector<u8>>,
 }
 
 fun init(ctx: &mut TxContext) {
     let admin = ctx.sender();
-
-    let mut prize_pools = vector::empty<Coin<SUI>>();
-    let mut i = 0;
-    while (i < vector::length(&POOL_DISTRIBUTION)) {
-        vector::push_back(&mut prize_pools, zero(ctx));
-        i = i + 1;
-    };
 
     let game = Game {
         id: object::new(ctx),
@@ -97,7 +82,7 @@ fun init(ctx: &mut TxContext) {
         vrf_pubkey: option::none(),
         round_number: 0,
         current_round: option::none(),
-        prize_pools,
+        ruby: table::new<address, u64>(ctx),
         winning_numbers: option::none(),
     };
 
@@ -115,20 +100,62 @@ public entry fun set_vrf_key(game: &mut Game, new_key: vector<u8>, ctx: &mut TxC
     game.vrf_pubkey = option::some(new_key);
 }
 
-public entry fun join_round(
+public entry fun get_user_ruby(game: &mut Game, user: address): u64 {
+    if (table::contains(&game.ruby, user)) {
+        return *table::borrow(&game.ruby, user)
+    } else {
+        return 0
+    }
+}
+
+public entry fun join_round_with_sui(
     picks: vector<u8>,
-    mut payment: Coin<SUI>,
+    payment: Coin<SUI>,
     game: &mut Game,
     clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    // Validate active round
+    // common validations
+    ensure_active_round(game, clock, picks);
+
+    // SUI payment logic
+    assert!(value(&payment) == SUI_ENTRY_FEE, E_INSUFFICIENT_FEE);
+    transfer::public_transfer(payment, game.admin);
+
+    // record
+    join_round_record(picks, game, ctx);
+}
+
+public entry fun join_round_with_ruby(
+    picks: vector<u8>,
+    game: &mut Game,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    // common validations
+    ensure_active_round(game, clock, picks);
+
+    // ruby payment logic
+    let payer = ctx.sender();
+    assert!(table::contains(&game.ruby, payer) == true, E_INSUFFICIENT_RUBY);
+    let prev = table::remove(&mut game.ruby, payer);
+    assert!(prev >= RUBY_ENTRY_FEE, E_INSUFFICIENT_RUBY);
+    let rem = prev - RUBY_ENTRY_FEE;
+    table::add(&mut game.ruby, payer, rem);
+
+    // record
+    join_round_record(picks, game, ctx);
+}
+
+// Extracts & validates the active round, checks pick-length and timing.
+fun ensure_active_round(game: &Game, clock: &Clock, picks: vector<u8>) {
     assert!(option::is_some(&game.current_round), E_ROUND_NOT_ACTIVE);
-    let round = option::borrow_mut(&mut game.current_round);
+    let round = option::borrow(&game.current_round);
+    // let round = option::borrow_mut(&mut game.current_round);
     let now = timestamp_ms(clock);
     assert!(now >= round.start_time_ms, E_TIME_NOT_STARTED);
     assert!(now <= round.end_time_ms, E_TIME_ENDED);
-    // Validate picks
+
     assert!(vector::length(&picks) == NUMBERS_TO_CHOOSE, E_INVALID_PICKS_LENGTH);
     let mut i = 0;
     while (i < vector::length(&picks)) {
@@ -136,39 +163,18 @@ public entry fun join_round(
         assert!(pick >= 1 && pick <= MAX_NUM, E_INVALID_PICKS);
         i = i + 1;
     };
-    // Ensure exact fee
-    assert!(payment.value() == ENTRY_FEE, E_INSUFFICIENT_FEE);
+}
 
-    let dev_amount = ENTRY_FEE * DEV_FEE / 10000;
-    let dev_cut: Coin<SUI> = split(&mut payment, dev_amount, ctx);
-    transfer::public_transfer(dev_cut, game.admin);
+// Shared logic for emitting the event and pushing the bet.
+fun join_round_record(picks: vector<u8>, game: &mut Game, ctx: &TxContext) {
+    event::emit(BetPlaced {
+        round_number: game.round_number,
+        player: ctx.sender(),
+        picks,
+    });
 
-    // Distribute fee into prize pools
-    let pools = &mut game.prize_pools;
-    let rest_amount = payment.value();
-    let mut j = 0;
-    while (j < vector::length(&POOL_DISTRIBUTION)) {
-        let pct = *vector::borrow(&POOL_DISTRIBUTION, j);
-        let amount = rest_amount * pct / 10000;
-        let piece: Coin<SUI> = split(&mut payment, amount, ctx);
-        let pool_ref = vector::borrow_mut(pools, j);
-        join(pool_ref, piece);
-        j = j + 1;
-    };
-
-    round.value = round.value + rest_amount;
-
-    // If there's any dust left, merge it back into pool[0]
-    if (value(&payment) > 0) {
-        let pool0 = vector::borrow_mut(pools, 0);
-        join(pool0, payment);
-    } else {
-        // Otherwise (zero‐value coin), destroy it explicitly
-        destroy_zero(payment);
-    };
-    event::emit(BetPlaced { round_number: game.round_number, player: ctx.sender(), picks });
-
-    vector::push_back(&mut round.bets, Bet { player: ctx.sender(), picks: picks });
+    let round = option::borrow_mut(&mut game.current_round);
+    vector::push_back(&mut round.bets, Bet { player: ctx.sender(), picks });
 }
 
 // Public entry to end any active round and start a new one
@@ -178,7 +184,6 @@ public entry fun trigger_new_round(
     alpha_string: vector<u8>,
     proof: vector<u8>,
     clock: &Clock,
-    ctx: &mut TxContext,
 ) {
     // if there is an active round, call end_round
     if (option::is_some(&game.current_round)) {
@@ -187,7 +192,7 @@ public entry fun trigger_new_round(
         assert!(now >= round.end_time_ms, E_TIME_ENDED);
         let vrf_pubkey = option::borrow(&game.vrf_pubkey);
         assert!(ecvrf_verify(&output, &alpha_string, vrf_pubkey, &proof), E_INVALID_PROOF);
-        end_round(game, output, ctx);
+        end_round(game, output);
     };
     start_new_round(game, clock);
 }
@@ -199,7 +204,6 @@ fun start_new_round(game: &mut Game, clock: &Clock) {
     let round = Round {
         start_time_ms: start_time_ms,
         end_time_ms: start_time_ms + ROUND_DURATION_MS,
-        value: 0,
         bets: vector::empty<Bet>(),
     };
 
@@ -216,9 +220,10 @@ fun start_new_round(game: &mut Game, clock: &Clock) {
 }
 
 // Internal helper to end round and distribute prizes
-fun end_round(game: &mut Game, output: vector<u8>, ctx: &mut TxContext) {
+fun end_round(game: &mut Game, output: vector<u8>) {
     let round = option::borrow_mut(&mut game.current_round);
 
+    // no bets → just emit and bail
     if (vector::length(&round.bets) == 0) {
         event::emit(RoundEnded {
             round_number: game.round_number,
@@ -227,15 +232,23 @@ fun end_round(game: &mut Game, output: vector<u8>, ctx: &mut TxContext) {
         return
     };
 
+    // 1) draw & record winning numbers
     let winning_numbers = generate_random_numbers(output);
     game.winning_numbers = option::some(winning_numbers);
-    let mut winners_for_pools = vector::empty<vector<address>>();
-    let bucket_count = vector::length(&POOL_DISTRIBUTION);
+    event::emit(RoundEnded {
+        round_number: game.round_number,
+        winning: winning_numbers,
+    });
+
+    // 2) bucket the winners
+    let bucket_count = vector::length(&POOLS);
+    let mut winners_per_bucket = vector::empty<vector<address>>();
     let mut i = 0;
     while (i < bucket_count) {
-        vector::push_back(&mut winners_for_pools, vector::empty<address>());
+        vector::push_back(&mut winners_per_bucket, vector::empty<address>());
         i = i + 1;
     };
+
     let bets_ref = &round.bets;
     i = 0;
     while (i < vector::length(bets_ref)) {
@@ -243,43 +256,44 @@ fun end_round(game: &mut Game, output: vector<u8>, ctx: &mut TxContext) {
         let mut matches = 0;
         let mut j = 0;
         while (j < vector::length(&bet.picks)) {
-            let pick = *vector::borrow(&bet.picks, j);
-            if (vector::contains(&winning_numbers, &pick)) {
+            if (vector::contains(&winning_numbers, vector::borrow(&bet.picks, j))) {
                 matches = matches + 1;
             };
             j = j + 1;
         };
-
         if (matches > 0) {
-            // Notice we use matches-1 here to index 0..9 for 1–10 matches
-            let bucket = winners_for_pools.borrow_mut(matches - 1);
+            let bucket = &mut winners_per_bucket[matches - 1];
             bucket.push_back(bet.player);
         };
         i = i + 1;
     };
-
-    event::emit(RoundEnded {
-        round_number: game.round_number,
-        winning: winning_numbers,
-    });
-
     i = 0;
-    while (i < vector::length(&winners_for_pools)) {
-        let winners = vector::borrow(&winners_for_pools, i);
-        let winner_count = vector::length(winners);
-        let pool_coin = vector::borrow_mut(&mut game.prize_pools, i);
-        if (winner_count > 0) {
-            let prize_per_winner = value(pool_coin) / winner_count;
-            let mut j = 0;
-            while (j < winner_count) {
-                let winner = *vector::borrow(winners, j);
-                let prize: Coin<SUI> = split(pool_coin, prize_per_winner, ctx);
-                transfer::public_transfer(prize, winner);
-                j = j + 1;
-            };
+    while (i < bucket_count) {
+        let total_rubies = *vector::borrow(&POOLS, i);
+        let winners = &winners_per_bucket[i];
+        let wcount = vector::length(winners);
+        if (wcount > 0) {
+            let share = total_rubies / wcount;
+            let mut k = 0;
+            while (k < wcount) {
+                let player = *vector::borrow(winners, k);
+                credit_ruby(&mut game.ruby, player, share);
+                k = k + 1;
+            }
         };
         i = i + 1;
-    };
+    }
+}
+
+// Helper to credit ruby into the Game’s ruby table
+fun credit_ruby(ruby: &mut Table<address, u64>, who: address, amount: u64) {
+    if (!table::contains(ruby, who)) {
+        // first time seeing this player?
+        table::add(ruby, who, amount);
+    } else {
+        let bal_ref = table::borrow_mut(ruby, who);
+        *bal_ref = *bal_ref + amount;
+    }
 }
 
 // Internal helper to generate random numbers
@@ -304,19 +318,20 @@ fun generate_random_numbers(output: vector<u8>): vector<u8> {
 #[test_only]
 use sui::clock::{Self};
 #[test_only]
-use sui::coin::{mint_for_testing};
+use sui::coin::{mint_for_testing, zero, destroy_zero};
 #[test_only]
 use std::unit_test::{assert_eq};
 #[test_only]
 use sui::test_scenario;
 #[test_only]
 use sui::test_utils::destroy;
+
 // === Test Helpers ===
 #[test_only]
 fun create_game(
     ctx: &mut TxContext,
     current_round: Option<Round>,
-    prize_pools: vector<Coin<SUI>>,
+    ruby: Table<address, u64>,
 ): Game {
     Game {
         id: object::new(ctx),
@@ -324,7 +339,7 @@ fun create_game(
         vrf_pubkey: option::none(),
         round_number: 0,
         current_round,
-        prize_pools,
+        ruby,
         winning_numbers: option::none(),
     }
 }
@@ -334,7 +349,6 @@ fun create_round(start_time_ms: u64, end_time_ms: u64): Round {
     Round {
         start_time_ms: start_time_ms,
         end_time_ms: end_time_ms,
-        value: 0,
         bets: vector<Bet>[],
     }
 }
@@ -390,7 +404,8 @@ fun test_module_init() {
 #[test]
 fun test_set_vrf_key_succeeds_for_admin() {
     let mut ctx = tx_context::dummy();
-    let mut game = create_game(&mut ctx, option::none(), vector::empty<Coin<SUI>>());
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::none(), ruby_table);
 
     let key: vector<u8> = x"928744da5ffa614d65dd1d5659a8e9dd558e68f8565946ef3d54215d90cba015";
     set_vrf_key(&mut game, key, &mut ctx);
@@ -406,7 +421,8 @@ fun test_set_vrf_key_succeeds_for_admin() {
 #[test, expected_failure(abort_code = E_NOT_ADMIN)]
 fun test_set_vrf_key_fails_for_non_admin() {
     let mut ctx = tx_context::dummy();
-    let mut game = create_game(&mut ctx, option::none(), vector::empty<Coin<SUI>>());
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::none(), ruby_table);
 
     let key: vector<u8> = x"928744da5ffa614d65dd1d5659a8e9dd558e68f8565946ef3d54215d90cba015";
 
@@ -418,16 +434,17 @@ fun test_set_vrf_key_fails_for_non_admin() {
     transfer::public_transfer(game, dummy_address);
 }
 
-// === join_round Tests ===
+// // === join_round Tests ===
 #[test, expected_failure(abort_code = E_ROUND_NOT_ACTIVE)]
 fun test_join_round_fails_when_no_active_round() {
     let mut ctx = tx_context::dummy();
-    let mut game = create_game(&mut ctx, option::none(), vector::empty<Coin<SUI>>());
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::none(), ruby_table);
     let picks = vector<u8>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let fee: Coin<SUI> = zero(&mut ctx);
     let clock = clock::create_for_testing(&mut ctx);
 
-    join_round(picks, fee, &mut game, &clock, &mut ctx);
+    join_round_with_sui(picks, fee, &mut game, &clock, &mut ctx);
 
     end_tests(game, clock, zero(&mut ctx));
 }
@@ -436,13 +453,14 @@ fun test_join_round_fails_when_no_active_round() {
 fun test_join_round_fails_on_not_started() {
     let mut ctx = tx_context::dummy();
     let round = create_round(10, 0);
-    let mut game = create_game(&mut ctx, option::some(round), vector::empty<Coin<SUI>>());
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
 
     let picks = vector<u8>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let fee: Coin<SUI> = zero(&mut ctx);
     let clock = clock::create_for_testing(&mut ctx);
 
-    join_round(picks, fee, &mut game, &clock, &mut ctx);
+    join_round_with_sui(picks, fee, &mut game, &clock, &mut ctx);
 
     end_tests(game, clock, zero(&mut ctx));
 }
@@ -451,7 +469,8 @@ fun test_join_round_fails_on_not_started() {
 fun test_join_round_fails_on_ended() {
     let mut ctx = tx_context::dummy();
     let round = create_round(0, 0);
-    let mut game = create_game(&mut ctx, option::some(round), vector::empty<Coin<SUI>>());
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
 
     let picks = vector<u8>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let fee: Coin<SUI> = zero(&mut ctx);
@@ -459,7 +478,7 @@ fun test_join_round_fails_on_ended() {
 
     clock::set_for_testing(&mut clock, 10);
 
-    join_round(picks, fee, &mut game, &clock, &mut ctx);
+    join_round_with_sui(picks, fee, &mut game, &clock, &mut ctx);
 
     end_tests(game, clock, zero(&mut ctx));
 }
@@ -468,13 +487,14 @@ fun test_join_round_fails_on_ended() {
 fun test_join_round_fails_on_invalid_picks_length() {
     let mut ctx = tx_context::dummy();
     let round = create_round(0, 0);
-    let mut game = create_game(&mut ctx, option::some(round), vector::empty<Coin<SUI>>());
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
 
     let picks = vector<u8>[1, 2, 3];
     let fee: Coin<SUI> = zero(&mut ctx);
     let clock = clock::create_for_testing(&mut ctx);
 
-    join_round(picks, fee, &mut game, &clock, &mut ctx);
+    join_round_with_sui(picks, fee, &mut game, &clock, &mut ctx);
 
     end_tests(game, clock, zero(&mut ctx));
 }
@@ -483,13 +503,14 @@ fun test_join_round_fails_on_invalid_picks_length() {
 fun test_join_round_fails_on_invalid_picks() {
     let mut ctx = tx_context::dummy();
     let round = create_round(0, 0);
-    let mut game = create_game(&mut ctx, option::some(round), vector::empty<Coin<SUI>>());
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
 
     let picks = vector<u8>[1, 2, 3, 4, 5, 6, 7, 8, 9, 81];
     let fee: Coin<SUI> = zero(&mut ctx);
     let clock = clock::create_for_testing(&mut ctx);
 
-    join_round(picks, fee, &mut game, &clock, &mut ctx);
+    join_round_with_sui(picks, fee, &mut game, &clock, &mut ctx);
 
     end_tests(game, clock, zero(&mut ctx));
 }
@@ -498,55 +519,35 @@ fun test_join_round_fails_on_invalid_picks() {
 fun test_join_round_fails_on_insufficient_fee() {
     let mut ctx = tx_context::dummy();
     let round = create_round(0, 0);
-    let mut game = create_game(&mut ctx, option::some(round), vector::empty<Coin<SUI>>());
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
 
     let picks = vector<u8>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
     let fee: Coin<SUI> = zero(&mut ctx);
     let clock = clock::create_for_testing(&mut ctx);
 
-    join_round(picks, fee, &mut game, &clock, &mut ctx);
+    join_round_with_sui(picks, fee, &mut game, &clock, &mut ctx);
 
     end_tests(game, clock, zero(&mut ctx));
 }
 
 #[test]
-fun test_join_round_success() {
+fun test_join_round_with_sui_success() {
     let mut ctx = tx_context::dummy();
-    let mut pools = vector::empty<Coin<SUI>>();
-    let mut i = 0;
-    while (i < vector::length(&POOL_DISTRIBUTION)) {
-        vector::push_back(&mut pools, zero(&mut ctx));
-        i = i + 1;
-    };
     let round = create_round(0, 10);
-    let mut game = create_game(&mut ctx, option::some(round), pools);
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
 
     let picks = vector<u8>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let fee: Coin<SUI> = mint_for_testing(ENTRY_FEE, &mut ctx);
+    let fee: Coin<SUI> = mint_for_testing(SUI_ENTRY_FEE, &mut ctx);
     let clock = clock::create_for_testing(&mut ctx);
 
-    join_round(picks, fee, &mut game, &clock, &mut ctx);
+    join_round_with_sui(picks, fee, &mut game, &clock, &mut ctx);
 
     // Assert round values
     assert_eq!(game.winning_numbers, option::none());
     assert_eq!(game.current_round.borrow().start_time_ms, 0);
     assert_eq!(game.current_round.borrow().end_time_ms, 10);
-
-    // Assert prize pools values
-    let pools_ref = &game.prize_pools;
-    let entry_fee_minus_dev_fee = ENTRY_FEE - (ENTRY_FEE * DEV_FEE / 10000);
-    i = 0;
-    while (i < vector::length(&POOL_DISTRIBUTION)) {
-        let pct = *vector::borrow(&POOL_DISTRIBUTION, i);
-        let amount = entry_fee_minus_dev_fee * pct / 10000;
-        let pool_ref = vector::borrow(pools_ref, i);
-        let pool_value = value(pool_ref);
-        assert_eq!(pool_value, amount);
-        i = i + 1;
-    };
-
-    // Assert round value
-    assert_eq!(game.current_round.borrow().value, entry_fee_minus_dev_fee);
 
     // Assert user bet values
     let bets_ref = &game.current_round.borrow().bets;
@@ -558,19 +559,75 @@ fun test_join_round_success() {
     end_tests(game, clock, zero(&mut ctx));
 }
 
+#[test, expected_failure(abort_code = E_INSUFFICIENT_RUBY)]
+fun test_join_round_with_ruby_fails_on_not_present_in_ruby() {
+    let mut ctx = tx_context::dummy();
+    let round = create_round(0, 0);
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
+
+    let picks = vector<u8>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let clock = clock::create_for_testing(&mut ctx);
+
+    join_round_with_ruby(picks, &mut game, &clock, &mut ctx);
+
+    end_tests(game, clock, zero(&mut ctx));
+}
+
+#[test, expected_failure(abort_code = E_INSUFFICIENT_RUBY)]
+fun test_join_round_with_ruby_fails_on_insufficient_ruby() {
+    let mut ctx = tx_context::dummy();
+    let round = create_round(0, 0);
+
+    let mut ruby_table = table::new<address, u64>(&mut ctx);
+    table::add(&mut ruby_table, ctx.sender(), 10); // Only 10 ruby available
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
+
+    let picks = vector<u8>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let clock = clock::create_for_testing(&mut ctx);
+
+    join_round_with_ruby(picks, &mut game, &clock, &mut ctx);
+
+    end_tests(game, clock, zero(&mut ctx));
+}
+
+#[test]
+fun test_join_round_with_ruby_success() {
+    let mut ctx = tx_context::dummy();
+    let round = create_round(0, 10);
+    let mut ruby_table = table::new<address, u64>(&mut ctx);
+    table::add(&mut ruby_table, ctx.sender(), 50);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
+
+    let picks = vector<u8>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let clock = clock::create_for_testing(&mut ctx);
+
+    join_round_with_ruby(picks, &mut game, &clock, &mut ctx);
+
+    // Assert round values
+    assert_eq!(game.winning_numbers, option::none());
+    assert_eq!(game.current_round.borrow().start_time_ms, 0);
+    assert_eq!(game.current_round.borrow().end_time_ms, 10);
+
+    // Assert user bet values
+    let bets_ref = &game.current_round.borrow().bets;
+    assert_eq!(vector::length(bets_ref), 1);
+    let bet = vector::borrow(bets_ref, 0);
+    assert_eq!(bet.player, ctx.sender());
+    assert_eq!(bet.picks, picks);
+    assert_eq!(get_user_ruby(&mut game, ctx.sender()), 0); // Ruby should be deducted
+
+    end_tests(game, clock, zero(&mut ctx));
+}
+
 // === trigger_new_round Tests ===
 
 // === no current round ===
 #[test]
 fun test_trigger_new_round_start_new_round() {
     let mut ctx = tx_context::dummy();
-    let mut pools = vector::empty<Coin<SUI>>();
-    let mut i = 0;
-    while (i < vector::length(&POOL_DISTRIBUTION)) {
-        vector::push_back(&mut pools, zero(&mut ctx));
-        i = i + 1;
-    };
-    let mut game = create_game(&mut ctx, option::none(), pools);
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::none(), ruby_table);
 
     let (public_key, output, alpha_string, proof) = get_test_ecvrf_values();
     set_vrf_key(&mut game, public_key, &mut ctx);
@@ -579,14 +636,13 @@ fun test_trigger_new_round_start_new_round() {
 
     assert!(option::is_none(&game.current_round));
 
-    trigger_new_round(&mut game, output, alpha_string, proof, &clock, &mut ctx);
+    trigger_new_round(&mut game, output, alpha_string, proof, &clock);
 
     assert!(option::is_some(&game.current_round));
     assert_eq!(game.round_number, 0);
     assert_eq!(game.winning_numbers, option::none());
     assert_eq!(game.current_round.borrow().start_time_ms, 0);
     assert_eq!(game.current_round.borrow().end_time_ms, ROUND_DURATION_MS);
-    assert_eq!(game.current_round.borrow().value, 0);
 
     end_tests(game, clock, zero(&mut ctx));
 }
@@ -595,18 +651,13 @@ fun test_trigger_new_round_start_new_round() {
 #[test, expected_failure(abort_code = E_TIME_ENDED)]
 fun test_trigger_new_round_fails_on_time_ended() {
     let mut ctx = tx_context::dummy();
-    let mut pools = vector::empty<Coin<SUI>>();
-    let mut i = 0;
-    while (i < vector::length(&POOL_DISTRIBUTION)) {
-        vector::push_back(&mut pools, zero(&mut ctx));
-        i = i + 1;
-    };
     let round = create_round(0, 10);
-    let mut game = create_game(&mut ctx, option::some(round), pools);
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
 
     let clock = clock::create_for_testing(&mut ctx);
 
-    trigger_new_round(&mut game, x"", x"", x"", &clock, &mut ctx);
+    trigger_new_round(&mut game, x"", x"", x"", &clock);
 
     end_tests(game, clock, zero(&mut ctx));
 }
@@ -614,14 +665,9 @@ fun test_trigger_new_round_fails_on_time_ended() {
 #[test, expected_failure(abort_code = sui::ecvrf::EInvalidProofEncoding)]
 fun test_trigger_new_round_fails_on_invalid_proof() {
     let mut ctx = tx_context::dummy();
-    let mut pools = vector::empty<Coin<SUI>>();
-    let mut i = 0;
-    while (i < vector::length(&POOL_DISTRIBUTION)) {
-        vector::push_back(&mut pools, zero(&mut ctx));
-        i = i + 1;
-    };
     let round = create_round(0, 10);
-    let mut game = create_game(&mut ctx, option::some(round), pools);
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
 
     let (public_key, output, alpha_string, _) = get_test_ecvrf_values();
     let proof = b"invalid proof";
@@ -630,7 +676,7 @@ fun test_trigger_new_round_fails_on_invalid_proof() {
     let mut clock = clock::create_for_testing(&mut ctx);
     clock::set_for_testing(&mut clock, 10);
 
-    trigger_new_round(&mut game, output, alpha_string, proof, &clock, &mut ctx);
+    trigger_new_round(&mut game, output, alpha_string, proof, &clock);
 
     end_tests(game, clock, zero(&mut ctx));
 }
@@ -638,14 +684,9 @@ fun test_trigger_new_round_fails_on_invalid_proof() {
 #[test]
 fun test_trigger_new_round_no_bets() {
     let mut ctx = tx_context::dummy();
-    let mut pools = vector::empty<Coin<SUI>>();
-    let mut i = 0;
-    while (i < vector::length(&POOL_DISTRIBUTION)) {
-        vector::push_back(&mut pools, zero(&mut ctx));
-        i = i + 1;
-    };
     let round = create_round(0, 10);
-    let mut game = create_game(&mut ctx, option::some(round), pools);
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
 
     let (public_key, output, alpha_string, proof) = get_test_ecvrf_values();
     set_vrf_key(&mut game, public_key, &mut ctx);
@@ -653,14 +694,13 @@ fun test_trigger_new_round_no_bets() {
     let mut clock = clock::create_for_testing(&mut ctx);
     clock::set_for_testing(&mut clock, 10);
 
-    trigger_new_round(&mut game, output, alpha_string, proof, &clock, &mut ctx);
+    trigger_new_round(&mut game, output, alpha_string, proof, &clock);
 
     assert!(option::is_some(&game.current_round));
     assert_eq!(game.round_number, 1);
     assert_eq!(game.winning_numbers, option::none());
     assert_eq!(game.current_round.borrow().start_time_ms, 10);
     assert_eq!(game.current_round.borrow().end_time_ms, ROUND_DURATION_MS + 10);
-    assert_eq!(game.current_round.borrow().value, 0);
 
     end_tests(game, clock, zero(&mut ctx));
 }
@@ -668,50 +708,33 @@ fun test_trigger_new_round_no_bets() {
 #[test]
 fun test_trigger_new_round_with_bets() {
     let mut ctx = tx_context::dummy();
-    let mut pools = vector::empty<Coin<SUI>>();
-    let mut i = 0;
-    while (i < vector::length(&POOL_DISTRIBUTION)) {
-        vector::push_back(&mut pools, zero(&mut ctx));
-        i = i + 1;
-    };
     let round = create_round(0, 10);
-    let mut game = create_game(&mut ctx, option::some(round), pools);
+    let ruby_table = table::new<address, u64>(&mut ctx);
+    let mut game = create_game(&mut ctx, option::some(round), ruby_table);
 
     let (public_key, output, alpha_string, proof) = get_test_ecvrf_values();
     set_vrf_key(&mut game, public_key, &mut ctx);
 
     let mut clock = clock::create_for_testing(&mut ctx);
     let picks = vector<u8>[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    let fee: Coin<SUI> = mint_for_testing(ENTRY_FEE, &mut ctx);
+    let fee: Coin<SUI> = mint_for_testing(SUI_ENTRY_FEE, &mut ctx);
 
-    join_round(picks, fee, &mut game, &clock, &mut ctx);
+    join_round_with_sui(picks, fee, &mut game, &clock, &mut ctx);
 
     clock::set_for_testing(&mut clock, 10);
 
-    trigger_new_round(&mut game, output, alpha_string, proof, &clock, &mut ctx);
+    trigger_new_round(&mut game, output, alpha_string, proof, &clock);
 
     assert!(option::is_some(&game.current_round));
     assert_eq!(game.round_number, 1);
     assert_eq!(game.current_round.borrow().start_time_ms, 10);
     assert_eq!(game.current_round.borrow().end_time_ms, ROUND_DURATION_MS + 10);
     assert_eq!(game.current_round.borrow().bets, vector::empty<Bet>());
-    assert_eq!(game.current_round.borrow().value, 0);
 
     let expected_numbers = vector<u8>[80, 14, 68, 29, 37, 3, 11, 30, 75, 39, 74, 38];
     assert_eq!(game.winning_numbers, option::some(expected_numbers));
 
-    let prize_pools_ref = &game.prize_pools;
-    let pool_0 = prize_pools_ref.borrow(0);
-    assert_eq!(value(pool_0), 0); // amount won by better
-    let entry_fee_minus_dev_fee = ENTRY_FEE - (ENTRY_FEE * DEV_FEE / 10000);
-    i = 1;
-    while (i < vector::length(&POOL_DISTRIBUTION)) {
-        let pool_ref = prize_pools_ref.borrow(i);
-        let pct = *vector::borrow(&POOL_DISTRIBUTION, i);
-        let amount = entry_fee_minus_dev_fee * pct / 10000;
-        assert_eq!(value(pool_ref), amount);
-        i = i + 1;
-    };
+    assert_eq!(get_user_ruby(&mut game, ctx.sender()), 100); // amount won by better
 
     end_tests(game, clock, zero(&mut ctx));
 }

@@ -43,7 +43,7 @@ dependencies = [
 ]
 
 [move.toolchain-version]
-compiler-version = "1.47.0"
+compiler-version = "1.52.0"
 edition = "2024.beta"
 flavor = "sui"
 
@@ -56,13 +56,13 @@ latest-published-id = "0xacee9fa4b2f8f69731057f27a0c256dd3f4b856e10fa63e46ec4c4a
 published-version = "1"
 
 [env.devnet]
-chain-id = "6ee96fc3"
-original-published-id = "0xbaa8de4bbdf2ebb299a38bee847b7cf13b8b90a0d3972a86f0269b82bf85fa8b"
-latest-published-id = "0xbaa8de4bbdf2ebb299a38bee847b7cf13b8b90a0d3972a86f0269b82bf85fa8b"
+chain-id = "06039fc3"
+original-published-id = "0xc075bba9d436ffc85d7c8240fec67687703abef4919be9f3d8bfbcc49fa21cce"
+latest-published-id = "0xc075bba9d436ffc85d7c8240fec67687703abef4919be9f3d8bfbcc49fa21cce"
 published-version = "1"
 
 [env.testnet]
 chain-id = "4c78adac"
-original-published-id = "0xf68cd9182503232431e710e0f02da68809315a9a465dda913c2fb53aadbfeb75"
-latest-published-id = "0xf68cd9182503232431e710e0f02da68809315a9a465dda913c2fb53aadbfeb75"
+original-published-id = "0x92fb7526b0af4d00a84aa3b1674b4173f8518599335845791cd539be0aafa0f5"
+latest-published-id = "0x92fb7526b0af4d00a84aa3b1674b4173f8518599335845791cd539be0aafa0f5"
 published-version = "1"
