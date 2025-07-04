@@ -180,13 +180,13 @@ async function keeperLoop(client: SuiClient, signer: Ed25519Keypair) {
         } catch (e) {
           attempt++;
           console.warn(`⚠️ trigger attempt #${attempt} failed:`, e);
-          if (attempt >= 5) {
+          if (attempt >= 3) {
             console.error(
               "❌ All trigger retries failed, giving up until next round"
             );
             break;
           }
-          await sleep(1000000000);
+          await sleep(3000);
         }
       }
 
